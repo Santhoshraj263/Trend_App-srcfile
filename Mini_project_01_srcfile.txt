@@ -1,0 +1,304 @@
+  sudo cat dockerfile 
+FROM nginx:alpine
+COPY dist/ /usr/share/nginx/html
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+[ec2-user@ip-172-31-34-186 Trend]$ sudo cat main.tf 
+provider "aws" {
+  region = "ap-south-1"
+}
+
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+
+# Add subnet, Internet Gateway, route table, and EC2 for Jenkins
+
+resource "aws_instance" "jenkins" {
+  ami = "ami-0f918f7e67a3323f0" 
+  instance_type = "t2.medium"
+  user_data = <<-EOF
+              #!/bin/bash
+              sudo apt-get update -y
+              sudo apt-get install docker.io -y
+              sudo usermod -aG docker ec2-user
+              sudo apt-get update
+              sudo apt-get install fontconfig openjdk-21-jre -y
+              sudo wget -O /etc/apt/keyrings/jenkins-keyring.asc \
+              https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+              echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc]" \
+              https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
+              /etc/apt/sources.list.d/jenkins.list > /dev/null
+              sudo apt-get update -y
+              sudo apt-get install jenkins -y
+              EOF
+  tags = {
+    Name = "Build-Server"
+  }
+}
+
+
+# Create security group for EC2 instance
+resource "aws_security_group" "Final" {
+  name        = "Final"
+  description = "Allow SSH and HTTP traffic"
+
+  ingress {
+    from_port = 22
+    to_port   = 22
+    protocol  = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port = 80
+    to_port   = 80
+    protocol  = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+    ingress {
+    from_port = 8080
+    to_port   = 8080
+    protocol  = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+# Create security group for EC2 instance
+resource "aws_security_group" "Final1" {
+  name        = "Final1"
+  description = "Allow SSH, HTTP, Jenkins (8080), and MySQL (3306) traffic"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 9100
+    to_port     = 9100
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 9323
+    to_port     = 9323
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}  
+# Launch EC2 instance
+resource "aws_instance" "BuildEC2" {
+  ami             = "ami-0f918f7e67a3323f0" 
+  instance_type   = "t2.medium"
+  key_name        = "Ec2_wesite"
+  vpc_security_group_ids  = [aws_security_group.Final.id]
+  tags = {
+    Name        = "Jenkins Server"
+  }
+
+  user_data = <<-EOF
+              #!/bin/bash
+              sudo apt-get update
+              sudo apt-get install openjdk-21-jre -y
+              sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
+                https://pkg.jenkins.io/debian/jenkins.io-2023.key
+              echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+                https://pkg.jenkins.io/debian binary/ | sudo tee \
+                /etc/apt/sources.list.d/jenkins.list > /dev/null
+              sudo apt-get update
+              sudo apt-get install jenkins -y
+              sudo apt install docker.io -y
+              sudo chmod 777 /var/run/docker.sock
+              EOF
+}
+[ec2-user@ip-172-31-34-186 Trend]$ sudo cat deployment.yml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trend-app
+  labels:
+    app: trend-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: trend-app
+  template:
+    metadata:
+      labels:
+        app: trend-app
+    spec:
+      containers:
+      - name: trendapp-container
+        image: san263/trend_project:tagname
+        ports:
+        - containerPort: 80
+        imagePullPolicy: Always
+
+[ec2-user@ip-172-31-34-186 Trend]$ 
+[ec2-user@ip-172-31-34-186 Trend]$ sudo cat service.yml 
+apiVersion: v1
+kind: Service
+metadata:
+  name: trend-app
+spec:
+  type: LoadBalancer
+  selector:
+    app: trend-app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+	
+	
+Jenkinsfile
+
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'san263/trend_project:latest'
+        DOCKER_REGISTRY_CREDENTIALS = 'dockerhub-credentials' // Add credentials in Jenkins
+        KUBECONFIG_CREDENTIALS = 'kubeconfig-id'              // Add kubeconfig in Jenkins
+    }
+
+    stages {
+        stage('Checkout Source') {
+            steps {
+                git 'https://github.com/Santhoshraj263/Trend_App.git'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    dockerImage = docker.build(DOCKER_IMAGE)
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry('', DOCKER_REGISTRY_CREDENTIALS) {
+                        dockerImage.push()
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withKubeConfig(credentialsId: KUBECONFIG_CREDENTIALS) {
+                    sh 'kubectl apply -f deployment.yml'
+                    sh 'kubectl apply -f service.yml'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment completed successfully!'
+        }
+        failure {
+            echo 'Deployment failed!'
+        }
+    }
+}
+
+kubeconfig
+
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURCVENDQWUyZ0F3SUJBZ0lJUWFSOHlHbTNJZ2t3RFFZSktvWklodmNOQVFFTEJRQXdGVEVUTUJFR0ExVUUKQXhNS2EzVmlaWEp1WlhSbGN6QWVGdzB5TlRBNE1UQXhNalF4TXpoYUZ3MHpOVEE0TURneE1qUTJNemhhTUJVeApFekFSQmdOVkJBTVRDbXQxWW1WeWJtVjBaWE13Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLCkFvSUJBUUN2VVVZUll6Z0hMZjhKaXFLSWdJcXEyUUpVWE4wZm93Vk5nbCtGdG1kV1JJZ3Rndzh6VjdWWFVzQTEKdDJSSDZEOGt4NFI2Vmh6TEVoa2hsRnpwNWFtUUpBTVlhcmd3RWRkekFySTUrQTdKR0orSFcyV0pZOHBwRnRkbQpzRnExL2pJVEJIN2RkcmZzQUIvUStwcndEeWVHNXM0OEwreDNWbVRWTzVsUmlRRXlVTVVSN0JRWjJsUlVGL09rCklKdW9CaUh4b2plNyttb3FnZzZwdXo2eUlQSEhkblhWRW8xUUhJVnA0elhlR0dnMHpKWHJoZVJOMnJlL3JCbVMKK1piY05PNDBjdERjUU1YRjhudVBlREIzUW1CNCtUWWNIK2RlaHd2M05pbUxBSCtmZVAxaVcrSy9WcWJiTHkzSQpzb0R5b3k0ZkM0TDVlT3hUVU43QjVoYVRiZHpGQWdNQkFBR2pXVEJYTUE0R0ExVWREd0VCL3dRRUF3SUNwREFQCkJnTlZIUk1CQWY4RUJUQURBUUgvTUIwR0ExVWREZ1FXQkJRNTRKWTREcUs3SWZPZHBpaXlubXJxVFNOWDVUQVYKQmdOVkhSRUVEakFNZ2dwcmRXSmxjbTVsZEdWek1BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQTlGMkxGd0tpeQpjdVB0eXBRYlFBdlVuQUFTMFd2SlJXa2JzY0ZOVjZnVThhbmVtejErRDZ2NUpwQlZOMmdaUnd3RlBkVWttc2dLCm1IcnRtZFhVOE5HLzVYdFVISTl3clc5VmZFTnVVOHpRSjg2U3VDQXg1aVFZaTRXa1lPcHNHY3ExSyttTzMxdDQKWVdPOC95T0dsTzlEM0t3RUtnMjM5RzVaSHEybXNLb1V6OTBtWVNKaFhQVWxoQ3NRdWR5OXdlTlY4TXR2dnhDRAo1YSs4cTltR2gvUlpKUWhxUmtlT1NJblUvMUYwWlc0R05HMWxBZVczdTZZekN2dW5BWVI1S3NHdnhKZUw1N05ZCk5CVkp1dUFuNlV3NlJVa2FncHRDZ1pkYnFLY0llVUFiQmJGbjZTaXFuNXcxZmpocVl5dmlqWmkvb1NBZ09yQXUKeGhhNjRNL2tCZHBtCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    server: https://B8A7D040F8E76E7535A1BDBEB037CEBB.gr7.ap-south-1.eks.amazonaws.com
+  name: myEKScluster.ap-south-1.eksctl.io
+- cluster:
+    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURCVENDQWUyZ0F3SUJBZ0lJUWFSOHlHbTNJZ2t3RFFZSktvWklodmNOQVFFTEJRQXdGVEVUTUJFR0ExVUUKQXhNS2EzVmlaWEp1WlhSbGN6QWVGdzB5TlRBNE1UQXhNalF4TXpoYUZ3MHpOVEE0TURneE1qUTJNemhhTUJVeApFekFSQmdOVkJBTVRDbXQxWW1WeWJtVjBaWE13Z2dFaU1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLCkFvSUJBUUN2VVVZUll6Z0hMZjhKaXFLSWdJcXEyUUpVWE4wZm93Vk5nbCtGdG1kV1JJZ3Rndzh6VjdWWFVzQTEKdDJSSDZEOGt4NFI2Vmh6TEVoa2hsRnpwNWFtUUpBTVlhcmd3RWRkekFySTUrQTdKR0orSFcyV0pZOHBwRnRkbQpzRnExL2pJVEJIN2RkcmZzQUIvUStwcndEeWVHNXM0OEwreDNWbVRWTzVsUmlRRXlVTVVSN0JRWjJsUlVGL09rCklKdW9CaUh4b2plNyttb3FnZzZwdXo2eUlQSEhkblhWRW8xUUhJVnA0elhlR0dnMHpKWHJoZVJOMnJlL3JCbVMKK1piY05PNDBjdERjUU1YRjhudVBlREIzUW1CNCtUWWNIK2RlaHd2M05pbUxBSCtmZVAxaVcrSy9WcWJiTHkzSQpzb0R5b3k0ZkM0TDVlT3hUVU43QjVoYVRiZHpGQWdNQkFBR2pXVEJYTUE0R0ExVWREd0VCL3dRRUF3SUNwREFQCkJnTlZIUk1CQWY4RUJUQURBUUgvTUIwR0ExVWREZ1FXQkJRNTRKWTREcUs3SWZPZHBpaXlubXJxVFNOWDVUQVYKQmdOVkhSRUVEakFNZ2dwcmRXSmxjbTVsZEdWek1BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQTlGMkxGd0tpeQpjdVB0eXBRYlFBdlVuQUFTMFd2SlJXa2JzY0ZOVjZnVThhbmVtejErRDZ2NUpwQlZOMmdaUnd3RlBkVWttc2dLCm1IcnRtZFhVOE5HLzVYdFVISTl3clc5VmZFTnVVOHpRSjg2U3VDQXg1aVFZaTRXa1lPcHNHY3ExSyttTzMxdDQKWVdPOC95T0dsTzlEM0t3RUtnMjM5RzVaSHEybXNLb1V6OTBtWVNKaFhQVWxoQ3NRdWR5OXdlTlY4TXR2dnhDRAo1YSs4cTltR2gvUlpKUWhxUmtlT1NJblUvMUYwWlc0R05HMWxBZVczdTZZekN2dW5BWVI1S3NHdnhKZUw1N05ZCk5CVkp1dUFuNlV3NlJVa2FncHRDZ1pkYnFLY0llVUFiQmJGbjZTaXFuNXcxZmpocVl5dmlqWmkvb1NBZ09yQXUKeGhhNjRNL2tCZHBtCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    server: https://B8A7D040F8E76E7535A1BDBEB037CEBB.gr7.ap-south-1.eks.amazonaws.com
+  name: arn:aws:eks:ap-south-1:888577049776:cluster/myEKScluster
+contexts:
+- context:
+    cluster: myEKScluster.ap-south-1.eksctl.io
+    user: IAM_user@myEKScluster.ap-south-1.eksctl.io
+  name: IAM_user@myEKScluster.ap-south-1.eksctl.io
+- context:
+    cluster: arn:aws:eks:ap-south-1:888577049776:cluster/myEKScluster
+    user: arn:aws:eks:ap-south-1:888577049776:cluster/myEKScluster
+  name: arn:aws:eks:ap-south-1:888577049776:cluster/myEKScluster
+current-context: arn:aws:eks:ap-south-1:888577049776:cluster/myEKScluster
+kind: Config
+preferences: {}
+users:
+- name: IAM_user@myEKScluster.ap-south-1.eksctl.io
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      args:
+      - eks
+      - get-token
+      - --output
+      - json
+      - --cluster-name
+      - myEKScluster
+      - --region
+      - ap-south-1
+      command: aws
+      env:
+      - name: AWS_STS_REGIONAL_ENDPOINTS
+        value: regional
+      provideClusterInfo: false
+- name: arn:aws:eks:ap-south-1:888577049776:cluster/myEKScluster
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      args:
+      - --region
+      - ap-south-1
+      - eks
+      - get-token
+      - --cluster-name
+      - myEKScluster
+      - --output
+      - json
+      command: aws
